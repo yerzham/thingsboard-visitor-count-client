@@ -1,2 +1,7 @@
 venv
 lib
+credentials
+models
+video-samples
+__pycache__
+.vscode
