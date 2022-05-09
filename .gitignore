@@ -1,6 +1,7 @@
 venv
 lib
 credentials
+credentials.*
 models
 video-samples
 __pycache__
