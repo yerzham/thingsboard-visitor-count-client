@@ -1,7 +1,9 @@
+sys.path.insert(0, './utils')
+sys.path.insert(0, './lib')
+
 from multiprocessing import Process, Queue
 import datetime
 import multiprocessing
-from libs.rtpd.detector import Detector
 from picamera.array import PiRGBArray
 from picamera import PiCamera
 import time
@@ -9,11 +11,11 @@ import sys, os, logging
 import threading
 import time
 from typing import Tuple
-sys.path.insert(0, './utils')
-sys.path.insert(0, './lib')
+
 
 from dotenv import load_dotenv
 from utils.tb_device_mqtt import RESULT_CODES, TBDeviceMqttClient, TBPublishInfo
+from libs.rtpd.detector import Detector
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
