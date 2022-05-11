@@ -1,4 +1,10 @@
-from multiprocessing import RLock
+from multiprocessing import Process, Queue
+import datetime
+import multiprocessing
+from libs.rtpd.detector import Detector
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import time
 import sys, os, logging
 import threading
 import time
@@ -40,8 +46,11 @@ class RTPDClient:
             raise Exception("Unable to obtain device token")
         
         self._client = TBDeviceMqttClient(server[0], self.token, server[1], 1)
+        self._detection_queue = Queue(50)
+        
         # Client Operations
         self._operating = False
+        self._detectionOperating = False
         self._connected = False
         self._config = None
         # Client Config Validation
@@ -50,6 +59,7 @@ class RTPDClient:
         self._configured = False
         # Client Threads and Processes
         self._thread = None
+        self._detectionProcess = None
 
     def _update_configuration_validity(self):
         self._configured = self._detectionEnabled_valid and self._detectionBounds_valid
@@ -123,6 +133,45 @@ class RTPDClient:
 
     def _thread_main(self):
         self._loop_forever()
+
+    def _detection_process(self):
+        #cam setup
+        camera = PiCamera()
+        camera.resolution = self._model_image_dimensions
+        camera.framerate = self._camera_framerate
+        #cam capture
+        rawCamCapture = PiRGBArray(camera, size=self.model_image_dimensions)
+        time.sleep(0.1) # this happens before first starting the loop, also whenever the camera / detection is resumed. It gives the camera time to 'warm up'
+        for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
+            data = self._detector.process_image(frame.array, verbose=False)
+            number_of_people_in_detection_area = len([person for person in data if person["in_bounds"]])
+            rawCamCapture.truncate(0)
+
+            #load desired data into the queue
+            self.detection_to_queue(number_of_people_in_detection_area)
+
+    def detection_to_queue(self,detection):
+        if (self._detection_queue.full()): #this deals with full queue I think
+            self._detection_queue.get(self.queue_block,self.queue_timeout)
+        self._detection_queue.put_nowait((datetime.datetime.now(),detection))
+
+
+    def _start_detection(self):
+        if self._detectionProcess is not None:
+            return False
+        self._detectionProcess = Process(target=self._detection_process)
+        self._detectionProcess.daemon = True
+        self._detectionOperting = True
+        self._detectionProcess.start()
+
+    def _stop_detection(self):
+        if self._detectionProcess is None:
+            return False
+        self._detectionOperating = False
+        if multiprocessing.current_process() != self._detectionProcess:
+            self._detectionProcess.join()
+            self._detectionProcess = None
+
     
     def _loop_forever(self):
         self._client.subscribe_to_attribute('detectionEnabled', self._handle_detectionEnabled_change)
@@ -131,8 +180,17 @@ class RTPDClient:
             if (self._config == None and self._connected == True):
                 self._request_configuration()
             elif (self._config != None and self._config["shared"]["detectionEnabled"] == False):
-                print('ping')
-                self._client.send_attributes({})
+                if (self._detectionOperating == True):
+                    self._stop_detection()
+                else:
+                    print('ping')
+                    self._client.send_attributes({})
+            elif (self._config != None and self._config["shared"]["detectionEnabled"] == True):
+                if (self._detectionOperating == False):
+                    self._start_detection()
+                else:
+                    print('sending from queue')
+                    self._client.send_attributes({})
             time.sleep(2)
     
     def _loop_start(self):
