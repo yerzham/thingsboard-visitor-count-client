@@ -49,6 +49,17 @@ class RTPDClient:
         
         self._client = TBDeviceMqttClient(server[0], self.token, server[1], 1)
         self._detection_queue = Queue(50)
+
+        self._model_image_dimensions = (544, 320)
+        self._model_loc = "models/pd_retail_13/FP16"
+        self._detection_threshold = 0.6
+        self._camera_framerate = 1 # fps
+        self._camera_rotation_degrees = 0
+        self._max_detections_to_store = 50 # buffer size
+
+        #detector setup
+        self._detector = Detector(model_loc=self._model_loc, model_image_dimensions=self._model_image_dimensions,
+                    detection_threshold=self._detection_threshold, device="MYRIAD")
         
         # Client Operations
         self._operating = False
