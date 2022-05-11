@@ -1,3 +1,4 @@
+import sys, os, logging
 sys.path.insert(0, './utils')
 sys.path.insert(0, './lib')
 
@@ -7,7 +8,6 @@ import multiprocessing
 from picamera.array import PiRGBArray
 from picamera import PiCamera
 import time
-import sys, os, logging
 import threading
 import time
 from typing import Tuple
