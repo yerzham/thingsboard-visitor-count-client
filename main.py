@@ -40,12 +40,15 @@ class RTPDClient:
             raise Exception("Unable to obtain device token")
         
         self._client = TBDeviceMqttClient(server[0], self.token, server[1], 1)
+        # Client Operations
         self._operating = False
         self._connected = False
+        self._config = None
+        # Client Config Validation
         self._detectionEnabled_valid = False
         self._detectionBounds_valid = False
-        self._config = None
         self._configured = False
+        # Client Threads and Processes
         self._thread = None
 
     def _update_configuration_validity(self):
