@@ -1,8 +1,8 @@
 import sys, os, logging
-sys.path.insert(0, './utils')
-sys.path.insert(0, './lib')
+sys.path.append('./utils')
+sys.path.append('./lib')
 
-from multiprocessing import Process, Queue
+from multiprocessing import Event, Process, Queue, RLock
 import datetime
 import multiprocessing
 from picamera.array import PiRGBArray
@@ -19,6 +19,7 @@ from libs.rtpd.detector import Detector
 
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
+log = logging.getLogger(__name__)
 SERVER = ("tb.yerzham.com",8883)
 PROVISION_DEVICE_KEY = os.getenv('PROVISION_DEVICE_KEY')
 PROVISION_DEVICE_SECRET = os.getenv('PROVISION_DEVICE_SECRET')
@@ -57,13 +58,9 @@ class RTPDClient:
         self._camera_rotation_degrees = 0
         self._max_detections_to_store = 50 # buffer size
 
-        #detector setup
-        self._detector = Detector(model_loc=self._model_loc, model_image_dimensions=self._model_image_dimensions,
-                    detection_threshold=self._detection_threshold, device="MYRIAD")
-        
         # Client Operations
         self._operating = False
-        self._detectionOperating = False
+        self._detection_operating = False
         self._connected = False
         self._config = None
         # Client Config Validation
@@ -71,8 +68,9 @@ class RTPDClient:
         self._detectionBounds_valid = False
         self._configured = False
         # Client Threads and Processes
-        self._thread = None
-        self._detectionProcess = None
+        self._connection_thread = None
+        self._detection_process = None
+        self._detection_stop_event = Event()
 
     def _update_configuration_validity(self):
         self._configured = self._detectionEnabled_valid and self._detectionBounds_valid
@@ -138,108 +136,121 @@ class RTPDClient:
     
     def _connected_handler(self, client, userdata, flags, result_code, *extra_params):
         if (result_code != 0):
-            print("Connection failed: %d, %s" % (result_code, RESULT_CODES.setdefault(result_code, 'unknown')))
+            log.error("Network: connection failed: %d, %s" % (result_code, RESULT_CODES.setdefault(result_code, 'unknown')))
             self._connected = False
             self._config = None
         elif (result_code == 0):
             self._connected = True
 
-    def _thread_main(self):
-        self._loop_forever()
-
-    def _detection_process(self):
+    def _detection_process_target(self):
         #cam setup
         camera = PiCamera()
         camera.resolution = self._model_image_dimensions
         camera.framerate = self._camera_framerate
         #cam capture
-        rawCamCapture = PiRGBArray(camera, size=self.model_image_dimensions)
-        time.sleep(0.1) # this happens before first starting the loop, also whenever the camera / detection is resumed. It gives the camera time to 'warm up'
+        rawCamCapture = PiRGBArray(camera, size=self._model_image_dimensions)
+
+        detector = Detector(model_loc=self._model_loc, model_image_dimensions=self._model_image_dimensions,
+                    detection_threshold=self._detection_threshold, device="MYRIAD")
+
+        log.debug("Detection process: PiCamera and MYRIAD device initialized")
         for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
-            data = self._detector.process_image(frame.array, verbose=False)
+            if (self._detection_stop_event.is_set()):
+                break
+            data = detector.process_image(frame.array)
             number_of_people_in_detection_area = len([person for person in data if person["in_bounds"]])
-            rawCamCapture.truncate(0)
-
+            rawCamCapture.seek(0)
             #load desired data into the queue
-            self.detection_to_queue(number_of_people_in_detection_area)
+            self._detection_to_queue(number_of_people_in_detection_area)
 
-    def detection_to_queue(self,detection):
+    def _detection_to_queue(self,detection):
         if (self._detection_queue.full()): #this deals with full queue I think
             self._detection_queue.get(self.queue_block,self.queue_timeout)
         self._detection_queue.put_nowait((datetime.datetime.now(),detection))
+        log.debug("Detection process: detection result loaded to queue")
 
 
     def _start_detection(self):
-        if self._detectionProcess is not None:
+        if self._detection_process is not None:
             return False
-        self._detectionProcess = Process(target=self._detection_process)
-        self._detectionProcess.daemon = True
-        self._detectionOperting = True
-        self._detectionProcess.start()
+        self._detection_process = Process(target=self._detection_process_target)
+        self._detection_process.daemon = True
+        self._detection_operating = True
+        self._detection_stop_event.clear()
+        log.info("Client: starting detection process")
+        self._detection_process.start()
 
     def _stop_detection(self):
-        if self._detectionProcess is None:
-            return False
-        self._detectionOperating = False
-        if multiprocessing.current_process() != self._detectionProcess:
-            self._detectionProcess.join()
-            self._detectionProcess = None
+        if self._detection_process is None:
+            return False        
+        self._detection_operating = False
+        self._detection_stop_event.set()
+        if multiprocessing.current_process() != self._detection_process:
+            log.info("Client: stopping detection process")
+            self._detection_process.join()
+            self._detection_process = None
 
     
-    def _loop_forever(self):
+    def _connection_thread_target(self):
         self._client.subscribe_to_attribute('detectionEnabled', self._handle_detectionEnabled_change)
         self._client.subscribe_to_attribute('detectionBounds', self._handle_detectionEnabled_change)
         while (self._operating):
             if (self._config == None and self._connected == True):
                 self._request_configuration()
             elif (self._config != None and self._config["shared"]["detectionEnabled"] == False):
-                if (self._detectionOperating == True):
+                if (self._detection_operating == True):
+                    log.info("Client: detection disabled")
                     self._stop_detection()
                 else:
-                    print('ping')
+                    log.debug('ping')
                     self._client.send_attributes({})
+                    time.sleep(2)
             elif (self._config != None and self._config["shared"]["detectionEnabled"] == True):
-                if (self._detectionOperating == False):
+                if (self._detection_operating == False):
+                    log.info("Client: detection enabled")
                     self._start_detection()
                 else:
-                    print('sending from queue')
+                    detection_result = self._detection_queue.get()
+                    log.debug('Network: sending detection result')
                     self._client.send_attributes({})
-            time.sleep(2)
     
-    def _loop_start(self):
-        if self._thread is not None:
+    def _start_connection(self):
+        if self._connection_thread is not None:
             return False
-        self._thread = threading.Thread(target=self._thread_main)
-        self._thread.daemon = True
+        self._connection_thread = threading.Thread(target=self._connection_thread_target)
+        self._connection_thread.daemon = True
         self._operating = True
-        self._thread.start()
+        log.info("Client: starting connection thread")
+        self._connection_thread.start()
 
-    def _loop_stop(self):
-        if self._thread is None:
+    def _stop_connection(self):
+        if self._connection_thread is None:
             return False
         self._operating = False
-        if threading.current_thread() != self._thread:
-            self._thread.join()
-            self._thread = None
+        if threading.current_connection_thread() != self._connection_thread:
+            log.info("Client: stopping connection thread")
+            self._connection_thread.join()
+            self._connection_thread = None
 
     def stop(self):
         self._client.stop()
-        self._loop_stop()
+        self._stop_connection()
 
     def stopped(self):
         return self._client.stopped
 
-    def connect(self):
+    def start(self):
         self._client.connect(tls=True, callback=self._connected_handler, keepalive=2)
-        self._loop_start()
+        self._start_connection()
         
 
 
 if __name__ == '__main__':
     rtpd_client = RTPDClient(SERVER)
     try:
-        rtpd_client.connect()
+        rtpd_client.start()
         while True:
             time.sleep(1000)
-    except:
+    except Exception as ex:
+        print(ex)
         rtpd_client.stop()
