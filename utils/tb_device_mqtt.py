@@ -13,17 +13,16 @@
 #      limitations under the License.
 #
 
-from collections import defaultdict
-import paho.mqtt.client as paho
 import logging
-import time
 import queue
-from json import loads, dumps
-from jsonschema import Draft7Validator
 import ssl
-from jsonschema import ValidationError
-from threading import RLock
-from threading import Thread
+import time
+from collections import defaultdict
+from json import dumps, loads
+from threading import RLock, Thread
+
+import paho.mqtt.client as paho
+from jsonschema import Draft7Validator, ValidationError
 
 KV_SCHEMA = {
     "type": "object",
@@ -96,12 +95,14 @@ RESULT_CODES = {
     5: "not authorised"
 }
 
+
 class TBTimeoutException(Exception):
     pass
 
 
 class TBQoSException(Exception):
     pass
+
 
 class ProvisionClient(paho.Client):
     PROVISION_REQUEST_TOPIC = "/provision/request"
@@ -119,22 +120,28 @@ class ProvisionClient(paho.Client):
     def __on_connect(self, client, userdata, flags, rc):  # Callback for connect
         if rc == 0:
             log.info("[Provisioning client] Connected to ThingsBoard ")
-            client.subscribe(self.PROVISION_RESPONSE_TOPIC)  # Subscribe to provisioning response topic
+            # Subscribe to provisioning response topic
+            client.subscribe(self.PROVISION_RESPONSE_TOPIC)
             provision_request = dumps(self.__provision_request)
-            log.info("[Provisioning client] Sending provisioning request %s" % provision_request)
-            client.publish(self.PROVISION_REQUEST_TOPIC, provision_request)  # Publishing provisioning request topic
+            log.info(
+                "[Provisioning client] Sending provisioning request %s" % provision_request)
+            # Publishing provisioning request topic
+            client.publish(self.PROVISION_REQUEST_TOPIC, provision_request)
         else:
-            log.info("[Provisioning client] Cannot connect to ThingsBoard!, result: %s" % RESULT_CODES[rc])
+            log.info(
+                "[Provisioning client] Cannot connect to ThingsBoard!, result: %s" % RESULT_CODES[rc])
 
     def __on_message(self, client, userdata, msg):
         decoded_payload = msg.payload.decode("UTF-8")
-        log.info("[Provisioning client] Received data from ThingsBoard: %s" % decoded_payload)
+        log.info(
+            "[Provisioning client] Received data from ThingsBoard: %s" % decoded_payload)
         decoded_message = loads(decoded_payload)
         provision_device_status = decoded_message.get("status")
         if provision_device_status == "SUCCESS":
             self.__credentials = decoded_message["credentialsValue"]
         else:
-            log.error("[Provisioning client] Provisioning was unsuccessful with status %s and message: %s" % (provision_device_status, decoded_message["errorMsg"]))
+            log.error("[Provisioning client] Provisioning was unsuccessful with status %s and message: %s" % (
+                provision_device_status, decoded_message["errorMsg"]))
         self.disconnect()
 
     def provision(self, tls=False, ca_certs=None, cert_file=None, key_file=None,):
@@ -144,11 +151,11 @@ class ProvisionClient(paho.Client):
         if tls:
             try:
                 self.tls_set(ca_certs=ca_certs,
-                                     certfile=cert_file,
-                                     keyfile=key_file,
-                                     cert_reqs=ssl.CERT_REQUIRED,
-                                     tls_version=ssl.PROTOCOL_TLSv1_2,
-                                     ciphers=None)
+                             certfile=cert_file,
+                             keyfile=key_file,
+                             cert_reqs=ssl.CERT_REQUIRED,
+                             tls_version=ssl.PROTOCOL_TLSv1_2,
+                             ciphers=None)
                 self.tls_insecure_set(False)
             except ValueError:
                 pass
@@ -156,6 +163,7 @@ class ProvisionClient(paho.Client):
 
     def get_credentials(self) -> str:
         return self.__credentials if self.__credentials is not None else ""
+
 
 class TBPublishInfo:
 
@@ -198,7 +206,8 @@ class TBDeviceMqttClient:
         self.__host = host
         self.__port = port
         if token == "":
-            log.warning("token is not set, connection without tls wont be established")
+            log.warning(
+                "token is not set, connection without tls wont be established")
         else:
             self._client.username_pw_set(token)
         self._lock = RLock()
@@ -226,10 +235,10 @@ class TBDeviceMqttClient:
         # https://pypi.org/project/paho-mqtt/#option-functions
 
     def _on_log(self, client, userdata, level, buf):
-    #     if isinstance(buf, Exception):
-    #         log.exception(buf)
-    #     else:
-    #         log.debug("%s - %s - %s - %s", client, userdata, level, buf)
+        #     if isinstance(buf, Exception):
+        #         log.exception(buf)
+        #     else:
+        #         log.debug("%s - %s - %s - %s", client, userdata, level, buf)
         pass
 
     def _on_publish(self, client, userdata, result):
@@ -239,7 +248,8 @@ class TBDeviceMqttClient:
     def _on_disconnect(self, client, userdata, result_code):
         prev_level = log.level
         log.setLevel("DEBUG")
-        log.debug("Disconnected client: %s, user data: %s, result code: %s", str(client), str(userdata), str(result_code))
+        log.debug("Disconnected client: %s, user data: %s, result code: %s", str(
+            client), str(userdata), str(result_code))
         log.setLevel(prev_level)
         if self.__connect_callback:
             time.sleep(.05)
@@ -247,23 +257,29 @@ class TBDeviceMqttClient:
 
     def _test_handle_connect(self, client, userdata, flags, result_code, *extra_params):
         print("connect callback called")
-    
+
     def _on_connect(self, client, userdata, flags, result_code, *extra_params):
         if result_code == 0:
             self.__is_connected = True
             log.info("connection SUCCESS")
-            self._client.subscribe(ATTRIBUTES_TOPIC, qos=self.quality_of_service)
-            self._client.subscribe(ATTRIBUTES_TOPIC + "/response/+", qos=self.quality_of_service)
-            self._client.subscribe(RPC_REQUEST_TOPIC + '+', qos=self.quality_of_service)
-            self._client.subscribe(RPC_RESPONSE_TOPIC + '+', qos=self.quality_of_service)
+            self._client.subscribe(
+                ATTRIBUTES_TOPIC, qos=self.quality_of_service)
+            self._client.subscribe(
+                ATTRIBUTES_TOPIC + "/response/+", qos=self.quality_of_service)
+            self._client.subscribe(RPC_REQUEST_TOPIC +
+                                   '+', qos=self.quality_of_service)
+            self._client.subscribe(
+                RPC_RESPONSE_TOPIC + '+', qos=self.quality_of_service)
         else:
             if result_code in RESULT_CODES:
-                log.error("connection FAIL with error %s %s", result_code, RESULT_CODES[result_code])
+                log.error("connection FAIL with error %s %s",
+                          result_code, RESULT_CODES[result_code])
             else:
                 log.error("connection FAIL with unknown error")
         if self.__connect_callback:
             time.sleep(.05)
-            self.__connect_callback(self, userdata, flags, result_code, *extra_params)
+            self.__connect_callback(
+                self, userdata, flags, result_code, *extra_params)
 
     def is_connected(self):
         return self.__is_connected
@@ -320,12 +336,15 @@ class TBDeviceMqttClient:
 
     def _on_decoded_message(self, client, content, message):
         if message.topic.startswith(RPC_REQUEST_TOPIC):
-            request_id = message.topic[len(RPC_REQUEST_TOPIC):len(message.topic)]
+            request_id = message.topic[len(
+                RPC_REQUEST_TOPIC):len(message.topic)]
             if self.__device_on_server_side_rpc_response:
-                self.__device_on_server_side_rpc_response(client, request_id, content)
+                self.__device_on_server_side_rpc_response(
+                    client, request_id, content)
         elif message.topic.startswith(RPC_RESPONSE_TOPIC):
             with self._lock:
-                request_id = int(message.topic[len(RPC_RESPONSE_TOPIC):len(message.topic)])
+                request_id = int(
+                    message.topic[len(RPC_RESPONSE_TOPIC):len(message.topic)])
                 callback = self.__device_client_rpc_dict.pop(request_id)
             callback(client, request_id, content, None)
         elif message.topic == ATTRIBUTES_TOPIC:
@@ -334,7 +353,8 @@ class TBDeviceMqttClient:
                 # callbacks for everything
                 if self.__device_sub_dict.get("*"):
                     for subscription_id in self.__device_sub_dict["*"]:
-                        dict_results.append(self.__device_sub_dict["*"][subscription_id])
+                        dict_results.append(
+                            self.__device_sub_dict["*"][subscription_id])
                 # specific callback
                 keys = content.keys()
                 keys_list = []
@@ -345,12 +365,14 @@ class TBDeviceMqttClient:
                     # find key in our dict
                     if self.__device_sub_dict.get(key):
                         for subscription in self.__device_sub_dict[key]:
-                            dict_results.append(self.__device_sub_dict[key][subscription])
+                            dict_results.append(
+                                self.__device_sub_dict[key][subscription])
             for res in dict_results:
                 res(client, content, None)
         elif message.topic.startswith(ATTRIBUTES_TOPIC_RESPONSE):
             with self._lock:
-                req_id = int(message.topic[len(ATTRIBUTES_TOPIC + "/response/"):])
+                req_id = int(
+                    message.topic[len(ATTRIBUTES_TOPIC + "/response/"):])
                 # pop callback and use it
                 callback = self._attr_request_dict.pop(req_id)
             callback(client, content, None)
@@ -377,7 +399,8 @@ class TBDeviceMqttClient:
         if quality_of_service not in (0, 1):
             log.error("Quality of service (qos) value must be 0 or 1")
             return None
-        info = self._client.publish(RPC_RESPONSE_TOPIC + req_id, resp, qos=quality_of_service)
+        info = self._client.publish(
+            RPC_RESPONSE_TOPIC + req_id, resp, qos=quality_of_service)
         if wait_for_publish:
             info.wait_for_publish()
 
@@ -385,7 +408,8 @@ class TBDeviceMqttClient:
         self.validate(RPC_VALIDATOR, params)
         with self._lock:
             self.__device_client_rpc_number += 1
-            self.__device_client_rpc_dict.update({self.__device_client_rpc_number: callback})
+            self.__device_client_rpc_dict.update(
+                {self.__device_client_rpc_number: callback})
             rpc_request_id = self.__device_client_rpc_number
         payload = {"method": method, "params": params}
         self._client.publish(RPC_REQUEST_TOPIC + str(rpc_request_id),
@@ -401,7 +425,8 @@ class TBDeviceMqttClient:
             qos = self.quality_of_service
         if qos not in (0, 1):
             log.exception("Quality of service (qos) value must be 0 or 1")
-            raise TBQoSException("Quality of service (qos) value must be 0 or 1")
+            raise TBQoSException(
+                "Quality of service (qos) value must be 0 or 1")
         return TBPublishInfo(self._client.publish(topic, data, qos))
 
     def send_telemetry(self, telemetry, quality_of_service=None):
@@ -420,10 +445,12 @@ class TBDeviceMqttClient:
             for attribute in self.__device_sub_dict:
                 if self.__device_sub_dict[attribute].get(subscription_id):
                     del self.__device_sub_dict[attribute][subscription_id]
-                    log.debug("Unsubscribed from %s, subscription id %i", attribute, subscription_id)
+                    log.debug("Unsubscribed from %s, subscription id %i",
+                              attribute, subscription_id)
             if subscription_id == '*':
                 self.__device_sub_dict = {}
-            self.__device_sub_dict = dict((k, v) for k, v in self.__device_sub_dict.items() if v)
+            self.__device_sub_dict = dict(
+                (k, v) for k, v in self.__device_sub_dict.items() if v)
 
     def subscribe_to_all_attributes(self, callback):
         return self.subscribe_to_attribute("*", callback)
@@ -432,10 +459,13 @@ class TBDeviceMqttClient:
         with self._lock:
             self.__device_max_sub_id += 1
             if key not in self.__device_sub_dict:
-                self.__device_sub_dict.update({key: {self.__device_max_sub_id: callback}})
+                self.__device_sub_dict.update(
+                    {key: {self.__device_max_sub_id: callback}})
             else:
-                self.__device_sub_dict[key].update({self.__device_max_sub_id: callback})
-            log.debug("Subscribed to %s with id %i", key, self.__device_max_sub_id)
+                self.__device_sub_dict[key].update(
+                    {self.__device_max_sub_id: callback})
+            log.debug("Subscribed to %s with id %i",
+                      key, self.__device_max_sub_id)
             return self.__device_max_sub_id
 
     def request_attributes(self, client_keys=None, shared_keys=None, callback=None):
@@ -467,12 +497,14 @@ class TBDeviceMqttClient:
         return info
 
     def _add_timeout(self, attr_request_number, timestamp):
-        self.__timeout_queue.put({"ts": timestamp, "attribute_request_id": attr_request_number})
+        self.__timeout_queue.put(
+            {"ts": timestamp, "attribute_request_id": attr_request_number})
 
     def _add_attr_request_callback(self, callback):
         with self._lock:
             self.__attr_request_number += 1
-            self._attr_request_dict.update({self.__attr_request_number: callback})
+            self._attr_request_dict.update(
+                {self.__attr_request_number: callback})
             attr_request_number = self.__attr_request_number
         return attr_request_number
 
@@ -490,12 +522,15 @@ class TBDeviceMqttClient:
                         callback = None
                         if item.get("attribute_request_id"):
                             if self._attr_request_dict.get(item["attribute_request_id"]):
-                                callback = self._attr_request_dict.pop(item["attribute_request_id"])
+                                callback = self._attr_request_dict.pop(
+                                    item["attribute_request_id"])
                         elif item.get("rpc_request_id"):
                             if self.__device_client_rpc_dict.get(item["rpc_request_id"]):
-                                callback = self.__device_client_rpc_dict.pop(item["rpc_request_id"])
+                                callback = self.__device_client_rpc_dict.pop(
+                                    item["rpc_request_id"])
                     if callback is not None:
-                        callback(self, None, TBTimeoutException("Timeout while waiting for a reply from ThingsBoard!"))
+                        callback(self, None, TBTimeoutException(
+                            "Timeout while waiting for a reply from ThingsBoard!"))
             else:
                 time.sleep(0.01)
 
@@ -503,8 +538,9 @@ class TBDeviceMqttClient:
         claiming_request = {
             "secretKey": secret_key,
             "durationMs": duration
-            }
-        info = TBPublishInfo(self._client.publish(CLAIMING_TOPIC, dumps(claiming_request), qos=self.quality_of_service))
+        }
+        info = TBPublishInfo(self._client.publish(
+            CLAIMING_TOPIC, dumps(claiming_request), qos=self.quality_of_service))
         return info
 
     @staticmethod
@@ -518,14 +554,14 @@ class TBDeviceMqttClient:
                   username=None,
                   password=None,
                   hash=None,
-                  tls=False, 
-                  ca_certs=None, 
-                  cert_file=None, 
+                  tls=False,
+                  ca_certs=None,
+                  cert_file=None,
                   key_file=None):
         provision_request = {
             "provisionDeviceKey": provision_device_key,
             "provisionDeviceSecret": provision_device_secret
-            }
+        }
 
         if access_token is not None:
             provision_request["token"] = access_token
@@ -542,6 +578,8 @@ class TBDeviceMqttClient:
         if device_name is not None:
             provision_request["deviceName"] = device_name
 
-        provisioning_client = ProvisionClient(host=host, port=port, provision_request=provision_request)
-        provisioning_client.provision(tls=tls, ca_certs=ca_certs, cert_file=cert_file, key_file=key_file)
+        provisioning_client = ProvisionClient(
+            host=host, port=port, provision_request=provision_request)
+        provisioning_client.provision(
+            tls=tls, ca_certs=ca_certs, cert_file=cert_file, key_file=key_file)
         return provisioning_client.get_credentials()
