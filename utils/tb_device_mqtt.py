@@ -17,7 +17,6 @@ import logging
 import queue
 import ssl
 import time
-from collections import defaultdict
 from json import dumps, loads
 from threading import RLock, Thread
 
