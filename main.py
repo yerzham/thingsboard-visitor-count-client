@@ -1,3 +1,5 @@
+from resource import prlimit
+from cv2 import ROTATE_180
 from dotenv import load_dotenv
 from typing import Tuple
 import threading
@@ -6,7 +8,7 @@ from picamera.exc import PiCameraMMALError
 from picamera import PiCamera
 from picamera.array import PiRGBArray
 import multiprocessing
-from multiprocessing import Event, Process, Queue, RLock
+from multiprocessing import Event, Process, Queue, Manager
 import sys
 import os
 import logging
@@ -58,6 +60,7 @@ class RTPDClient:
         self._client = TBDeviceMqttClient(server[0], self._token, server[1], 1)
 
         # Client operation status variables
+        self._connected = False
         self._operating = False
         self._configured = False
         self._detection_enabled = False
@@ -81,20 +84,15 @@ class RTPDClient:
         self._model_loc = "models/pd_retail_13/FP16"
         self._detection_threshold = 0.6
         self._camera_framerate = 1  # fps
-        self._camera_rotation_degrees = 0
+        self._camera_rotation = ROTATE_180
         self._max_detections_to_store = 50  # buffer size
         self._detection_queue: Queue[str] = Queue(50)
-
-    def _send_configuration_validity(self):
-        self._configured = self._detectionEnabled_valid and self._detectionBounds_valid
-        self._client.send_attributes({'configured': self._configured})
-
-    def _send_detection_status(self, detection_status):
-        self._detecting = detection_status
-        self._client.send_attributes({'detecting': detection_status})
+        self._detection_process_manager = Manager()
+        self._detection_bounds = self._detection_process_manager.list()
         
-    def _detection_process_target(self, max_try=5):
+    def _detection_process_target(self, detection_bounds, max_try=5):
         initalized = False
+        camera: PiCamera
         while not initalized:
             if (max_try <= 0):
                 log.error(
@@ -140,10 +138,12 @@ class RTPDClient:
         for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
             if (self._detection_stop_event.is_set()):
                 break
-            data = detector.process_image(frame.array)
+            data = detector.process_image(frame.array, self._camera_rotation)
+            if (detector.bounding_points != self._detection_bounds[0]):
+                detector.set_bounding_points(self._detection_bounds[0])
             number_of_people_in_detection_area = len(
                 [person for person in data if person["in_bounds"]])
-            rawCamCapture.seek(0)
+            rawCamCapture.truncate(0)
             # load desired data into the queue
             self._detection_to_queue({"ts": int(time.time(
             ) * 1000), "values": {"numberOfPeople": number_of_people_in_detection_area}})
@@ -161,7 +161,7 @@ class RTPDClient:
         self._detection_started_event.clear()
         self._detection_failed_event.clear()
         self._detection_process = Process(
-            target=self._detection_process_target)
+            target=self._detection_process_target, args=(self._detection_bounds,))
         self._detection_process.daemon = True
         log.info("Client: starting detection process")
         self._detection_process.start()
@@ -178,6 +178,14 @@ class RTPDClient:
             self._detection_process = None
             log.info("Client: detection process stopped")
         self._send_detection_status(False)
+
+    def _send_configuration_validity(self):
+        self._configured = self._detectionEnabled_valid and self._detectionBounds_valid
+        self._client.send_attributes({'configured': self._configured})
+
+    def _send_detection_status(self, detection_status):
+        self._detecting = detection_status
+        self._client.send_attributes({'detecting': detection_status})
 
     def _validate_and_read_detectionBounds(self, attributes):
         try:
@@ -235,6 +243,8 @@ class RTPDClient:
             raise exception
         self._config["shared"]["detectionBounds"] = self._validate_and_read_detectionBounds(
             result)
+        self._detection_bounds[:] = []
+        self._detection_bounds.append(self._config["shared"]["detectionBounds"])
         self._send_configuration_validity()
 
     def _handle_received_attributes(self, _client, result, exception):
@@ -242,6 +252,8 @@ class RTPDClient:
         if exception is not None:
             raise exception
         self._config = self._validate_and_read_attributes(result)
+        self._detection_bounds[:] = []
+        self._detection_bounds.append(self._config["shared"]["detectionBounds"])
         self._send_configuration_validity()
 
     def _request_configuration(self) -> bool:
@@ -297,6 +309,7 @@ class RTPDClient:
                 else:
                     if (self._detecting):
                         detection_result = self._detection_queue.get()
+                        print("Client reads bounds: ", self._detection_bounds)
                         log.debug('Network: sending detection result')
                         self._client.send_telemetry(detection_result)
 
