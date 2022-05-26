@@ -81,10 +81,9 @@ class RTPDClient:
 
         # Detector configuration variables
         self._model_image_dimensions = (544, 320)
-        self._model_loc = "models/pd_retail_13/FP16"
+        self._model_loc = ("models/pd_retail_13/FP16/model.xml","models/pd_retail_13/FP16/model.bin")
         self._detection_threshold = 0.6
         self._camera_framerate = 1  # fps
-        self._camera_rotation = ROTATE_180
         self._max_detections_to_store = 50  # buffer size
         self._detection_queue: Queue[str] = Queue(50)
         self._detection_process_manager = Manager()
@@ -109,10 +108,11 @@ class RTPDClient:
                 rawCamCapture = PiRGBArray(
                     camera, size=self._model_image_dimensions)
                 # detector init
-                detector = Detector(model_loc=self._model_loc, model_image_dimensions=self._model_image_dimensions,
-                                    detection_threshold=self._detection_threshold, device="MYRIAD")
+                detector = Detector()
+                detector.set_detection_model(self._model_loc,self._model_image_dimensions,"MYRIAD")
+                detector.set_detection_threshold(self._detection_threshold)
                 detector.set_bounding_points(
-                    self._config["shared"]["detectionBounds"])
+                    [self._config["shared"]["detectionBounds"]])
                 initalized = True
             except PiCameraMMALError as err:
                 log.warning(
@@ -138,9 +138,9 @@ class RTPDClient:
         for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
             if (self._detection_stop_event.is_set()):
                 break
-            data = detector.process_image(frame.array, self._camera_rotation)
-            if (detector.bounding_points != self._detection_bounds[0]):
-                detector.set_bounding_points(self._detection_bounds[0])
+            data = detector.detect_from_image(frame.array)
+            if (detector.get_bounding_points != self._detection_bounds[0]):
+                detector.set_bounding_points([self._detection_bounds[0]])
             number_of_people_in_detection_area = len(
                 [person for person in data if person["in_bounds"]])
             rawCamCapture.truncate(0)
