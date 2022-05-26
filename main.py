@@ -12,15 +12,18 @@ from multiprocessing import Event, Process, Queue, Manager
 import sys
 import os
 import logging
-sys.path.append('./utils')
-sys.path.append('./lib')
 
+# Import from local folders
+sys.path.append('./utils')
+sys.path.append('./libs')
 from libs.rtpd.detector import Detector
 from utils.tb_device_mqtt import RESULT_CODES, TBDeviceMqttClient
 
+# Prepare environment variables and logger
 load_dotenv()
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
+# Perpare server connection variables
 SERVER = ("tb.yerzham.com", 8883)
 PROVISION_DEVICE_KEY = os.getenv('PROVISION_DEVICE_KEY')
 PROVISION_DEVICE_SECRET = os.getenv('PROVISION_DEVICE_SECRET')
@@ -29,7 +32,7 @@ DEVICE_NAME = os.getenv('DEVICE_NAME')
 
 class RTPDClient:
     def _obtain_token(self, credentials_filename='credentials.txt'):
-        """Obrain token via file storing credentials. If not found, use environment variable provisioning 
+        """Obtain token via file storing credentials. If not found, use environment variable provisioning 
         credentials to request a new device token. Saves the device token into a file for a later use."""
         try:
             token_file = open(credentials_filename)
@@ -47,8 +50,8 @@ class RTPDClient:
         return token
 
     def __init__(self, server: Tuple[str, int], credentials_filename='credentials.txt'):
-        """Initialze the RTPD Client. Requires server information and a file where
-        where credentials are stored. If credentials do not exsist, client requires 
+        """Initialize the RTPD Client. Requires server information and a file where
+        where credentials are stored. If credentials do not exist, client requires 
         PROVISION_DEVICE_KEY, PROVISION_DEVICE_SECRET, DEVICE_NAME environment 
         variables defined."""
         self._server = server
@@ -79,50 +82,55 @@ class RTPDClient:
         self._detection_started_event = Event()
         self._detection_failed_event = Event()
 
+        # Camera configuration settings
+        self._camera_dimensions = (1920,1080)
+        self._camera_framerate = 1  # fps
+
         # Detector configuration variables
         self._model_image_dimensions = (544, 320)
-        self._model_loc = "models/pd_retail_13/FP16"
+        self._model_loc = ("models/pd_retail_13/FP16/model.xml","models/pd_retail_13/FP16/model.bin")
         self._detection_threshold = 0.6
-        self._camera_framerate = 1  # fps
-        self._camera_rotation = ROTATE_180
+        self._detection_areas = self._detection_process_manager.list()
+
+        # Detection management variables
         self._max_detections_to_store = 50  # buffer size
-        self._detection_queue: Queue[str] = Queue(50)
+        self._detection_queue: Queue[str] = Queue(self._max_detections_to_store)
         self._detection_process_manager = Manager()
-        self._detection_bounds = self._detection_process_manager.list()
         
-    def _detection_process_target(self, detection_bounds, max_try=5):
-        initalized = False
+    def _detection_process_target(self, detection_areas, max_try=5):
+        detection_initialized = False
         camera: PiCamera
-        while not initalized:
+        while not detection_initialized:
             if (max_try <= 0):
                 log.error(
-                    "Detection process: failed to initialze deviced for detection")
+                    "Detection process: failed to initialize device for detection")
                 self._detection_failed_event.set()
                 return
             max_try -= 1
             try:
-                # cam setup
+                # PiCamera setup
                 camera = PiCamera()
-                camera.resolution = self._model_image_dimensions
+                camera.resolution = self._camera_dimensions
                 camera.framerate = self._camera_framerate
-                # cam capture
+                # Camera capture
                 rawCamCapture = PiRGBArray(
-                    camera, size=self._model_image_dimensions)
-                # detector init
-                detector = Detector(model_loc=self._model_loc, model_image_dimensions=self._model_image_dimensions,
-                                    detection_threshold=self._detection_threshold, device="MYRIAD")
-                detector.set_bounding_points(
+                    camera, size=self._camera_dimensions)
+                # Detector initialization
+                detector = Detector()
+                detector.set_detection_model(self._model_loc,self._model_image_dimensions)
+                detector.set_detection_threshold(0.6)
+                detector.set_detection_areas(
                     self._config["shared"]["detectionBounds"])
-                initalized = True
+                detection_initialized = True
             except PiCameraMMALError as err:
                 log.warning(
-                    "Detection process: failed to initialze PiCamera device. Retrying...")
+                    "Detection process: failed to initialize PiCamera device. Retrying...")
                 camera.close()
                 time.sleep(5)
             except RuntimeError as err:
                 if (str(err) == "Can not init Myriad device: NC_ERROR"):
                     log.warning(
-                        "Detection process: failed to initialze Myriad device. Retrying...")
+                        "Detection process: failed to initialize Myriad device. Retrying...")
                     camera.close()
                     time.sleep(5)
                 else:
@@ -138,15 +146,13 @@ class RTPDClient:
         for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
             if (self._detection_stop_event.is_set()):
                 break
-            data = detector.process_image(frame.array, self._camera_rotation)
-            if (detector.bounding_points != self._detection_bounds[0]):
-                detector.set_bounding_points(self._detection_bounds[0])
-            number_of_people_in_detection_area = len(
-                [person for person in data if person["in_bounds"]])
+            detection_data = detector.detect_from_image(frame.array)
+            if (detector.get_detection_areas != self._detection_areas[0]):
+                detector.set_detection_areas(self._detection_areas[0])
             rawCamCapture.truncate(0)
             # load desired data into the queue
             self._detection_to_queue({"ts": int(time.time(
-            ) * 1000), "values": {"numberOfPeople": number_of_people_in_detection_area}})
+            ) * 1000), "values": {"numberOfPeople": len([person for person in detection_data if person['in_detection_area']])}})
 
     def _detection_to_queue(self, detection):
         if (self._detection_queue.full()):  # this deals with full queue I think
@@ -161,7 +167,7 @@ class RTPDClient:
         self._detection_started_event.clear()
         self._detection_failed_event.clear()
         self._detection_process = Process(
-            target=self._detection_process_target, args=(self._detection_bounds,))
+            target=self._detection_process_target, args=(self._detection_areas,))
         self._detection_process.daemon = True
         log.info("Client: starting detection process")
         self._detection_process.start()
@@ -243,8 +249,8 @@ class RTPDClient:
             raise exception
         self._config["shared"]["detectionBounds"] = self._validate_and_read_detectionBounds(
             result)
-        self._detection_bounds[:] = []
-        self._detection_bounds.append(self._config["shared"]["detectionBounds"])
+        self._detection_areas[:] = []
+        self._detection_areas.append(self._config["shared"]["detectionBounds"])
         self._send_configuration_validity()
 
     def _handle_received_attributes(self, _client, result, exception):
@@ -252,8 +258,8 @@ class RTPDClient:
         if exception is not None:
             raise exception
         self._config = self._validate_and_read_attributes(result)
-        self._detection_bounds[:] = []
-        self._detection_bounds.append(self._config["shared"]["detectionBounds"])
+        self._detection_areas[:] = []
+        self._detection_areas.append(self._config["shared"]["detectionBounds"])
         self._send_configuration_validity()
 
     def _request_configuration(self) -> bool:
@@ -309,7 +315,7 @@ class RTPDClient:
                 else:
                     if (self._detecting):
                         detection_result = self._detection_queue.get()
-                        print("Client reads bounds: ", self._detection_bounds)
+                        print("Client reads bounds: ", self._detection_areas)
                         log.debug('Network: sending detection result')
                         self._client.send_telemetry(detection_result)
 
