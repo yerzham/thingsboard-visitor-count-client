@@ -4,11 +4,7 @@ from dotenv import load_dotenv
 from typing import Tuple
 import threading
 import time
-from picamera.exc import PiCameraMMALError
-from picamera import PiCamera
-from picamera.array import PiRGBArray
-import multiprocessing
-from multiprocessing import Event, Process, Queue, Manager
+from multiprocessing import Queue, Manager
 import sys
 import os
 import logging
@@ -16,8 +12,9 @@ import logging
 # Import from local folders
 sys.path.append('./utils')
 sys.path.append('./libs')
-from libs.rtpd.detector import Detector
+from lib.rtpd.detector import Detector
 from utils.tb_device_mqtt import RESULT_CODES, TBDeviceMqttClient
+from detection_process import RTPDProcess
 
 # Prepare environment variables and logger
 load_dotenv()
@@ -74,116 +71,17 @@ class RTPDClient:
         self._detectionEnabled_valid = False
         self._detectionBounds_valid = False
 
+        # Detection variables
+        self._max_detections_to_store = 50  # buffer siz
+        self._detection_queue: Queue[str] = Queue(self._max_detections_to_store)
+        self._detection_areas = Manager().list()
+
         # Client network thread and detection process
         self._connection_thread = None
-        self._detection_process = None
-        # Client operation status events shared between threads and processes
-        self._detection_stop_event = Event()
-        self._detection_started_event = Event()
-        self._detection_failed_event = Event()
-
-        # Camera configuration settings
-        self._camera_dimensions = (1920,1080)
-        self._camera_framerate = 1  # fps
-
-        # Detector configuration variables
-        self._model_image_dimensions = (544, 320)
-        self._model_loc = ("models/pd_retail_13/FP16/model.xml","models/pd_retail_13/FP16/model.bin")
-        self._detection_threshold = 0.6
-        self._detection_areas = self._detection_process_manager.list()
-
-        # Detection management variables
-        self._max_detections_to_store = 50  # buffer size
-        self._detection_queue: Queue[str] = Queue(self._max_detections_to_store)
-        self._detection_process_manager = Manager()
-        
-    def _detection_process_target(self, detection_areas, max_try=5):
-        detection_initialized = False
-        camera: PiCamera
-        while not detection_initialized:
-            if (max_try <= 0):
-                log.error(
-                    "Detection process: failed to initialize device for detection")
-                self._detection_failed_event.set()
-                return
-            max_try -= 1
-            try:
-                # PiCamera setup
-                camera = PiCamera()
-                camera.resolution = self._camera_dimensions
-                camera.framerate = self._camera_framerate
-                # Camera capture
-                rawCamCapture = PiRGBArray(
-                    camera, size=self._camera_dimensions)
-                # Detector initialization
-                detector = Detector()
-                detector.set_detection_model(self._model_loc,self._model_image_dimensions)
-                detector.set_detection_threshold(0.6)
-                detector.set_detection_areas(
-                    self._config["shared"]["detectionBounds"])
-                detection_initialized = True
-            except PiCameraMMALError as err:
-                log.warning(
-                    "Detection process: failed to initialize PiCamera device. Retrying...")
-                camera.close()
-                time.sleep(5)
-            except RuntimeError as err:
-                if (str(err) == "Can not init Myriad device: NC_ERROR"):
-                    log.warning(
-                        "Detection process: failed to initialize Myriad device. Retrying...")
-                    camera.close()
-                    time.sleep(5)
-                else:
-                    log.error(err, exc_info=True)
-                    max_try = 0
-            except Exception as exc:
-                log.error(exc, exc_info=True)
-                max_try = 0
-                return
-
-        self._detection_started_event.set()
-        log.debug("Detection process: PiCamera and MYRIAD device initialized")
-        for frame in camera.capture_continuous(rawCamCapture, format="bgr", use_video_port=True):
-            if (self._detection_stop_event.is_set()):
-                break
-            detection_data = detector.detect_from_image(frame.array)
-            if (detector.get_detection_areas != self._detection_areas[0]):
-                detector.set_detection_areas(self._detection_areas[0])
-            rawCamCapture.truncate(0)
-            # load desired data into the queue
-            self._detection_to_queue({"ts": int(time.time(
-            ) * 1000), "values": {"numberOfPeople": len([person for person in detection_data if person['in_detection_area']])}})
-
-    def _detection_to_queue(self, detection):
-        if (self._detection_queue.full()):  # this deals with full queue I think
-            self._detection_queue.get()
-        self._detection_queue.put_nowait(detection)
-        log.debug("Detection process: detection result loaded to queue")
-
-    def _start_detection(self):
-        if self._detection_process is not None:
-            return False
-        self._detection_stop_event.clear()
-        self._detection_started_event.clear()
-        self._detection_failed_event.clear()
-        self._detection_process = Process(
-            target=self._detection_process_target, args=(self._detection_areas,))
-        self._detection_process.daemon = True
-        log.info("Client: starting detection process")
-        self._detection_process.start()
-        self._detection_enabled = True
-
-    def _stop_detection(self):
-        if self._detection_process is None:
-            return False
-        self._detection_enabled = False
-        self._detection_stop_event.set()
-        if multiprocessing.current_process() != self._detection_process:
-            log.info("Client: stopping detection process")
-            self._detection_process.join()
-            self._detection_process = None
-            log.info("Client: detection process stopped")
-        self._send_detection_status(False)
+        self._RTPD_process = RTPDProcess(self._detection_queue, self._detection_areas, 
+            detection_threshold=50, 
+            model_image_dimensions=(544, 320), 
+            model_loc=("models/pd_retail_13/FP16/model.xml", "models/pd_retail_13/FP16/model.bin"))
 
     def _send_configuration_validity(self):
         self._configured = self._detectionEnabled_valid and self._detectionBounds_valid
@@ -284,38 +182,42 @@ class RTPDClient:
 
     def _connection_thread_target(self):
         """Network connection thread that controls the client depending on network connectivity 
-        results and device status. Attributes detectionEnabled and detectionBounds affect
+        results and device status. Attributes detectionEnabled and detectionBounds influence
         the device behaviour, while device status triggers sending updates to the server"""
         self._client.subscribe_to_attribute(
             'detectionEnabled', self._handle_detectionEnabled_change)
         self._client.subscribe_to_attribute(
             'detectionBounds', self._handle_detectionBounds_change)
         while (self._operating):
-            if (self._detection_started_event.is_set()):
+            # Check detection process status updates
+            if (self._RTPD_process.started() and not self._detecting):
                 self._send_detection_status(True)
-                self._detection_started_event.clear()
-            if (self._detection_failed_event.is_set()):
+            if (self._RTPD_process.stopped() and self._detecting):
                 self._send_detection_status(False)
+            if (self._RTPD_process.failed()):
+                self._send_detection_status(False)
+                self._operating=False
                 break
-
-            if (self._config == None and self._connected == True):
+            
+            # If client configuration lost, request new one
+            if (self._config == None and self._connected == True): 
                 self._request_configuration()
+            # Otherwise, either idle or send detection data
             elif (self._config != None and self._config["shared"]["detectionEnabled"] == False):
-                if (self._detection_enabled == True):
+                if (self._RTPD_process.enabled() == True):
                     log.info("Client: detection disabled")
-                    self._stop_detection()
+                    self._RTPD_process.stop_detection()
                 else:
                     log.debug('Network: idle')
                     self._client.send_attributes({})
                     time.sleep(1.5)
             elif (self._config != None and self._config["shared"]["detectionEnabled"] == True):
-                if (self._detection_enabled == False):
+                if (self._RTPD_process.enabled() == False):
                     log.info("Client: detection enabled")
-                    self._start_detection()
+                    self._RTPD_process.start_detection()
                 else:
                     if (self._detecting):
                         detection_result = self._detection_queue.get()
-                        print("Client reads bounds: ", self._detection_areas)
                         log.debug('Network: sending detection result')
                         self._client.send_telemetry(detection_result)
 
@@ -343,12 +245,10 @@ class RTPDClient:
 
     def stop(self):
         self._stop_connection()
-        if (not self._client.stopped):
-            self._client.stop()
-        self._stop_detection()
+        self._RTPD_process.stop_detection()
 
     def stopped(self):
-        return self._client.stopped or self._detection_failed_event.is_set()
+        return not self._operating or self._client.stopped or self._RTPD_process.failed()
 
     def start(self):
         self._client.connect(
@@ -364,4 +264,5 @@ if __name__ == '__main__':
             time.sleep(1)
         rtpd_client.stop()
     except Exception as ex:
+        print(ex)
         rtpd_client.stop()

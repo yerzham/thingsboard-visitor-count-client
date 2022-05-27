@@ -1,5 +1,6 @@
 venv
-lib
+lib/*
+!lib/.gitkeep
 credentials
 credentials.*
 models
