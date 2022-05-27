@@ -1,3 +1,18 @@
+#      Copyright 2022. Yerzhan Zhamashev
+#  #
+#      Licensed under the GNU General Public License version 3 (the "License");
+#      you may not use this file except in compliance with the License.
+#      You may obtain a copy of the License at
+#  #
+#          https://opensource.org/licenses/GPL-3.0
+#  #
+#      Unless required by applicable law or agreed to in writing, software
+#      distributed under the License is distributed on an "AS IS" BASIS,
+#      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#      See the License for the specific language governing permissions and
+#      limitations under the License.
+#
+
 from multiprocessing import Queue, Manager
 from dotenv import load_dotenv
 from typing import Tuple
@@ -20,6 +35,7 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 # Perpare server connection variables
 SERVER = ("tb.yerzham.com", 8883)
+use_tls = True
 PROVISION_DEVICE_KEY = os.getenv('PROVISION_DEVICE_KEY')
 PROVISION_DEVICE_SECRET = os.getenv('PROVISION_DEVICE_SECRET')
 DEVICE_NAME = os.getenv('DEVICE_NAME')
@@ -33,7 +49,7 @@ class RTPDClient:
             token_file = open(credentials_filename)
         except IOError:
             token: str = TBDeviceMqttClient.provision(
-                self._server[0], PROVISION_DEVICE_KEY, PROVISION_DEVICE_SECRET, self._server[1], DEVICE_NAME, tls=True)
+                self._server[0], PROVISION_DEVICE_KEY, PROVISION_DEVICE_SECRET, self._server[1], DEVICE_NAME, tls=use_tls)
             if (token):
                 with open(credentials_filename, 'w') as token_file:
                     token_file.write(token)
@@ -250,7 +266,7 @@ class RTPDClient:
 
     def start(self):
         self._client.connect(
-            tls=True, callback=self._connected_handler, keepalive=2)
+            tls=use_tls, callback=self._connected_handler, keepalive=2)
         self._start_connection()
 
 
