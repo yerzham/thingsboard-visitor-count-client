@@ -2,3 +2,4 @@ numpy
 paho-mqtt
 jsonschema
 mmh3
+dotenv

@@ -1,13 +1,11 @@
-from resource import prlimit
-from cv2 import ROTATE_180
+from multiprocessing import Queue, Manager
 from dotenv import load_dotenv
 from typing import Tuple
 import threading
+import logging
 import time
-from multiprocessing import Queue, Manager
 import sys
 import os
-import logging
 
 # Import from local folders
 sys.path.append('./utils')
