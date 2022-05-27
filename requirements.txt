@@ -1,5 +1,7 @@
-numpy
-paho-mqtt
-jsonschema
-mmh3
-dotenv
+python-dotenv==0.20.0
+pip-autoremove==0.10.0
+picamera==1.13
+paho-mqtt==1.6.1
+numpy==1.21.6
+mmh3==3.0.0
+jsonschema==4.5.1
