@@ -20,6 +20,12 @@ In the background:
 * Reconnects to the back-end and updates configuration when an internet connection is back
 
 ## Installation
+```
+$ git clone https://version.aalto.fi/gitlab/dtap1/rtpd-client.git
+$ cd rtpd-client
+$ ./import-detector.sh
+```
+**Note:** $ `import-detector.sh` only works with `bash` installed. If on Windows, use Git Bash to execute or run the equivalent commands for your system.
 ### Program set up
 ```
 $ python3 -m venv venv
@@ -64,6 +70,10 @@ Instructions to set up your ThingsBoard server:
 * MQTT configuration parameters: https://thingsboard.io/docs/user-guide/install/config/#local-mqtt-transport-parameters
 
 ## Usage
+To run the client:
+```
+(venv) $ python3 main.py
+```
 After the client software is running, use our custom web application or ThingsBoard dashboard to control the device. If you have your own ThingsBoard server, follow our instruction on how to configure the available devices in ThingsBoard.
 
 ## Support
