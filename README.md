@@ -21,7 +21,7 @@ In the background:
 
 ## Installation
 ```
-$ git clone https://version.aalto.fi/gitlab/dtap1/rtpd-client.git
+$ git clone https://github.com/yerzhan0/ThingsBoard-Visitor-Counter-Client.git
 $ cd rtpd-client
 $ ./import-detector.sh
 ```
